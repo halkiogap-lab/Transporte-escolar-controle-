@@ -2,17 +2,19 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from datetime import datetime
-import urllib.parse
 
-# --- CONFIGURAÇÃO DO BANCO DE DADOS ---
+# --- CONFIGURAÇÃO DO BANCO DE DADOS (COM CORREÇÃO DE ERRO) ---
 def criar_banco():
     conn = sqlite3.connect('dados_transporte.db')
     c = conn.cursor()
+    # Tabela de alunos
     c.execute('''CREATE TABLE IF NOT EXISTS alunos 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, endereco TEXT, turno TEXT)''')
+    # Tabela de presença (Garante que a coluna hora_entrega exista)
     c.execute('''CREATE TABLE IF NOT EXISTS presenca 
                  (id_aluno INTEGER, data TEXT, status INTEGER, hora_entrega TEXT, PRIMARY KEY (id_aluno, data))''')
     
+    # AJUSTE DE SEGURANÇA: Verifica se a coluna 'hora_entrega' existe, se não, adiciona.
     try:
         c.execute("SELECT hora_entrega FROM presenca LIMIT 1")
     except sqlite3.OperationalError:
@@ -56,7 +58,7 @@ if aba == "✅ Chamada":
     presentes_ids = presenca_data[presenca_data['status'] == 1]['id_aluno'].tolist()
     
     if alunos_turno.empty:
-        st.warning("Nenhum aluno neste turno.")
+        st.warning("Nenhum aluno neste turno. Configure em 'Configurar Alunos'.")
     else:
         for _, row in alunos_turno.iterrows():
             c1, c2 = st.columns([3, 1])
@@ -72,7 +74,7 @@ if aba == "✅ Chamada":
                 conn.close()
                 st.rerun()
 
-# --- 2. ROTA E ENTREGA (COM BOTÃO GPS NOVO) ---
+# --- 2. ROTA E ENTREGA (ONDE ESTAVA O ERRO) ---
 elif aba == "📍 Rota e Entrega":
     st.header(f"📍 Rota - {data_selecionada.strftime('%d/%m/%Y')}")
     presenca_data = carregar_presenca_detalhada(data_str)
@@ -81,26 +83,18 @@ elif aba == "📍 Rota e Entrega":
     rota = df_atual[df_atual['id'].isin(presentes_ids)]
     
     if rota.empty:
-        st.info("Ninguém marcado como presente hoje.")
+        st.info("Ninguém marcado como presente para esta data.")
     else:
         for _, row in rota.iterrows():
             with st.expander(f"🏠 {row['nome']}"):
                 st.write(f"Endereço: {row['endereco']}")
                 
-                # --- NOVO: BOTÃO DE GPS ---
-                if row['endereco'] and row['endereco'] != "Não cadastrado":
-                    endereco_codificado = urllib.parse.quote(row['endereco'])
-                    link_maps = f"https://www.google.com/maps/search/?api=1&query={endereco_codificado}"
-                    st.link_button(f"🗺️ Abrir GPS: {row['nome']}", link_maps)
-                else:
-                    st.warning("Endereço não cadastrado para abrir o GPS.")
-                
-                # Registro de Entrega
+                # Busca a hora de entrega de forma segura
                 entrega_row = presenca_data[presenca_data['id_aluno'] == row['id']]
                 hora_atual = entrega_row['hora_entrega'].values[0] if not entrega_row.empty else ""
                 
                 if not hora_atual:
-                    if st.button(f"✅ Confirmar Entrega: {row['nome']}", key=f"ent_{row['id']}"):
+                    if st.button(f"Confirmar Entrega: {row['nome']}", key=f"ent_{row['id']}"):
                         h_agora = datetime.now().strftime("%H:%M")
                         conn = sqlite3.connect('dados_transporte.db')
                         conn.execute("UPDATE presenca SET hora_entrega = ? WHERE id_aluno = ? AND data = ?", (h_agora, row['id'], data_str))
@@ -112,7 +106,7 @@ elif aba == "📍 Rota e Entrega":
 
         st.divider()
         if st.button("🏁 FINALIZAR E GERAR RELATÓRIO", type="primary"):
-            st.subheader("📋 Relatório Final")
+            st.subheader("📋 Relatório")
             hora_gen = datetime.now().strftime("%H:%M")
             texto_relatorio = f"🚌 RELATÓRIO VAN - DATA: {data_str} às {hora_gen}\n\n✅ PRESENTES:\n"
             
@@ -126,7 +120,7 @@ elif aba == "📍 Rota e Entrega":
             for _, f in faltantes.iterrows():
                 texto_relatorio += f"- {f['nome']}\n"
             
-            st.text_area("Copie o texto:", texto_relatorio, height=200)
+            st.text_area("Copie para o WhatsApp:", texto_relatorio, height=200)
 
 # --- 3. CONFIGURAR ---
 elif aba == "⚙️ Configurar Alunos":
@@ -139,4 +133,26 @@ elif aba == "⚙️ Configurar Alunos":
             t = c1.selectbox("Turno", ["pendente", "matutino", "vespertino"], index=["pendente", "matutino", "vespertino"].index(row['turno']), key=f"t_{row['id']}")
             e = c2.text_input("Endereço", value=row['endereco'], key=f"e_{row['id']}")
             novos_dados.append((e, t, row['id']))
-        if st.form_submit_button("💾 SAL
+        if st.form_submit_button("💾 SALVAR TUDO"):
+            conn = sqlite3.connect('dados_transporte.db')
+            conn.executemany("UPDATE alunos SET endereco = ?, turno = ? WHERE id = ?", novos_dados)
+            conn.commit()
+            conn.close()
+            st.success("Salvo!")
+            st.rerun()
+
+# --- 4. NOVO ALUNO ---
+elif aba == "➕ Novo Aluno":
+    st.header("➕ Novo Aluno")
+    with st.form("f_novo"):
+        n = st.text_input("Nome")
+        e = st.text_input("Endereço")
+        t = st.selectbox("Turno", ["matutino", "vespertino", "pendente"])
+        if st.form_submit_button("Adicionar"):
+            if n:
+                conn = sqlite3.connect('dados_transporte.db')
+                conn.execute("INSERT INTO alunos (nome, endereco, turno) VALUES (?, ?, ?)", (n, e, t))
+                conn.commit()
+                conn.close()
+                st.success("Adicionado!")
+                st.rerun()
