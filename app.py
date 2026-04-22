@@ -2,18 +2,18 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
-# Configuração visual para não ficar "um lixo"
-st.set_page_config(page_title="Transporte Escolar Pro", layout="wide", initial_sidebar_state="expanded")
+# Configuração da página
+st.set_page_config(page_title="Transporte Escolar Pro", layout="wide")
 
-# Estilo personalizado para botões grandes
+# Estilo para botões e campos
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; height: 3em; font-size: 1.2em; }
-    [data-testid="stMetricValue"] { font-size: 2em; color: #ff4b4b; }
+    .stTextInput>div>div>input { background-color: #262730; color: white; border: 1px solid #4b4b4b; }
+    .stSelectbox>div>div { background-color: #262730; }
     </style>
     """, unsafe_allow_html=True)
 
-# LISTA COMPLETA DE ALUNOS (OPÇÃO 3 - CARGA AUTOMÁTICA)
+# LISTA OFICIAL DE ALUNOS
 LISTA_NOMES = [
     "Abel Bernardo", "Adeli da Silva", "Alice Andrade", "Alice Bernardes", "Alicia da Silva",
     "Allyce Gonçalves", "Amaya Rocha", "Ana Beatriz Neves", "Ana Clara Neves", "Ana Gabrielly",
@@ -43,81 +43,83 @@ LISTA_NOMES = [
     "Wallace Andrade", "Wathila Correa", "Yuri Paiva"
 ]
 
-# Inicialização do Banco de Dados
+# Inicialização do Banco de Dados na memória
 if 'children' not in st.session_state:
-    # Carrega a lista automaticamente na primeira vez
     st.session_state.children = [
-        {"id": i, "name": nome, "defaultAddress": "", "notes": "", "shift": "pendente"} 
+        {"id": i, "name": nome, "defaultAddress": "", "shift": "pendente"} 
         for i, nome in enumerate(LISTA_NOMES)
     ]
 if 'attendance' not in st.session_state:
     st.session_state.attendance = {}
 
-# --- NAVEGAÇÃO ---
-st.sidebar.title("🚐 Menu")
-choice = st.sidebar.radio("Ir para:", ["📊 Resumo", "✅ Chamada/Presença", "📍 Rota de Busca", "⚙️ Organizar Turnos"])
+# MENU LATERAL
+st.sidebar.title("🚐 Van Escolar")
+choice = st.sidebar.radio("Navegação", ["📊 Resumo", "✅ Chamada", "📍 Rota de Hoje", "⚙️ Cadastrar Endereços"])
 
 # 1. RESUMO
 if choice == "📊 Resumo":
-    st.header("📊 Painel de Controle")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total de Alunos", len(st.session_state.children))
-    col2.metric("Matutino", sum(1 for c in st.session_state.children if c['shift'] == 'matutino'))
-    col3.metric("Vespertino", sum(1 for c in st.session_state.children if c['shift'] == 'vespertino'))
-    
-    st.subheader("Lista Completa")
-    df = pd.DataFrame(st.session_state.children)
-    st.table(df[['name', 'shift']])
+    st.header("📊 Resumo Geral")
+    col1, col2 = st.columns(2)
+    col1.metric("Total Alunos", len(st.session_state.children))
+    col2.metric("Endereços Salvos", sum(1 for c in st.session_state.children if c['defaultAddress'] != ""))
 
-# 2. CHAMADA (Aqui é onde o bicho pega no dia a dia)
-elif choice == "✅ Chamada/Presença":
-    st.header("✅ Chamada Diária")
-    turno = st.selectbox("Escolha o Turno para a Chamada", ["matutino", "vespertino", "pendente"])
+# 2. CHAMADA
+elif choice == "✅ Chamada":
+    st.header("✅ Chamada do Dia")
+    turno = st.radio("Selecione o Turno", ["matutino", "vespertino"], horizontal=True)
     data_hoje = datetime.now().strftime("%Y-%m-%d")
     
-    alunos_filtrados = [c for c in st.session_state.children if c['shift'] == turno]
+    alunos_turno = [c for c in st.session_state.children if c['shift'] == turno]
     
-    if not alunos_filtrados:
-        st.warning(f"Não há alunos definidos como '{turno}'. Vá em 'Organizar Turnos'.")
+    if not alunos_turno:
+        st.warning(f"Nenhum aluno no turno {turno}. Use a aba 'Cadastrar Endereços' primeiro.")
     else:
-        for aluno in alunos_filtrados:
-            col_n, col_b = st.columns([2, 1])
-            col_n.write(f"### {aluno['name']}")
-            
-            # Chave única para o botão
+        for aluno in alunos_turno:
+            c1, c2 = st.columns([2, 1])
+            c1.write(f"**{aluno['name']}**")
             key = f"att_{data_hoje}_{aluno['id']}"
-            status = col_b.radio("Status", ["Faltou", "Presente"], key=key, horizontal=True)
-            st.session_state.attendance[key] = status
-            st.divider()
+            st.session_state.attendance[key] = c2.checkbox("Presente", key=key)
 
-# 3. ROTA DE BUSCA
-elif choice == "📍 Rota de Busca":
+# 3. ROTA
+elif choice == "📍 Rota de Hoje":
     st.header("📍 Rota de Coleta")
     data_hoje = datetime.now().strftime("%Y-%m-%d")
     
-    lista_rota = []
-    for aluno in st.session_state.children:
-        if st.session_state.attendance.get(f"att_{data_hoje}_{aluno['id']}") == "Presente":
-            lista_rota.append(aluno)
-            
-    if not lista_rota:
-        st.info("Nenhum aluno marcado como 'Presente' ainda.")
+    presentes = [c for c in st.session_state.children if st.session_state.attendance.get(f"att_{data_hoje}_{c['id']}") == True]
+    
+    if not presentes:
+        st.info("Ninguém marcado como 'Presente' ainda.")
     else:
-        for i, aluno in enumerate(lista_rota, 1):
-            with st.expander(f"{i}º - {aluno['name']}"):
-                st.write(f"🏠 Endereço: {aluno['defaultAddress'] if aluno['defaultAddress'] else 'Não cadastrado'}")
-                if st.button(f"Abrir no GPS: {aluno['name']}", key=f"gps_{aluno['id']}"):
-                    st.write(f"Abrindo Google Maps para: {aluno['defaultAddress']}...")
+        for p in presentes:
+            with st.expander(f"🏠 {p['name']}"):
+                if p['defaultAddress']:
+                    st.write(f"Endereço: {p['defaultAddress']}")
+                    url = f"https://www.google.com/maps/search/?api=1&query={p['defaultAddress'].replace(' ', '+')}"
+                    st.link_button("Abrir no GPS", url)
+                else:
+                    st.error("Endereço não cadastrado!")
 
-# 4. ORGANIZAR TURNOS (Manual para não dar erro)
-elif choice == "⚙️ Organizar Turnos":
-    st.header("⚙️ Configuração Manual")
-    st.write("Defina aqui quem é da manhã e quem é da tarde.")
+# 4. CADASTRAR ENDEREÇOS (AQUI VOCÊ SALVA TUDO!)
+elif choice == "⚙️ Cadastrar Endereços":
+    st.header("⚙️ Cadastro de Endereços e Turnos")
+    st.write("Preencha as informações abaixo. O app salva automaticamente conforme você digita.")
     
     for i, aluno in enumerate(st.session_state.children):
-        col1, col2 = st.columns([2, 1])
-        col1.write(aluno['name'])
-        novo_turno = col2.selectbox("", ["pendente", "matutino", "vespertino"], 
-                                   index=["pendente", "matutino", "vespertino"].index(aluno['shift']),
-                                   key=f"shift_{aluno['id']}")
-        st.session_state.children[i]['shift'] = novo_turno
+        with st.container():
+            st.write(f"### {aluno['name']}")
+            col1, col2 = st.columns([1, 2])
+            
+            # Campo de Turno
+            novo_turno = col1.selectbox("Turno", ["pendente", "matutino", "vespertino"], 
+                                       index=["pendente", "matutino", "vespertino"].index(aluno['shift']),
+                                       key=f"sh_{aluno['id']}")
+            
+            # CAMPO DE ENDEREÇO (QUE ESTAVA FALTANDO!)
+            novo_endereco = col2.text_input("Endereço da Casa (Rua, Número, Bairro)", 
+                                           value=aluno['defaultAddress'],
+                                           key=f"ad_{aluno['id']}")
+            
+            # Atualiza os dados
+            st.session_state.children[i]['shift'] = novo_turno
+            st.session_state.children[i]['defaultAddress'] = novo_endereco
+            st.divider()
