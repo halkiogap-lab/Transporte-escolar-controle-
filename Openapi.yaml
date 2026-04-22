@@ -1,0 +1,293 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: children
+    description: Children records
+  - name: attendance
+    description: Daily attendance and route
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /children:
+    get:
+      operationId: listChildren
+      tags: [children]
+      summary: List all children
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Child"
+    post:
+      operationId: createChild
+      tags: [children]
+      summary: Create a new child
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateChild"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Child"
+
+  /children/{id}:
+    patch:
+      operationId: updateChild
+      tags: [children]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateChild"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Child"
+    delete:
+      operationId: deleteChild
+      tags: [children]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "204":
+          description: Deleted
+
+  /attendance:
+    get:
+      operationId: listAttendance
+      tags: [attendance]
+      summary: Attendance for a date with child info merged in
+      parameters:
+        - in: query
+          name: date
+          required: true
+          schema:
+            type: string
+            description: ISO date YYYY-MM-DD
+        - in: query
+          name: shift
+          required: false
+          schema:
+            $ref: "#/components/schemas/Shift"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceRow"
+    put:
+      operationId: upsertAttendance
+      tags: [attendance]
+      summary: Set the attendance status for a child on a date
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertAttendance"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceRow"
+
+  /route:
+    get:
+      operationId: getRoute
+      tags: [attendance]
+      summary: Get the pickup route for a date (only present children with addresses)
+      parameters:
+        - in: query
+          name: date
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Route"
+
+  /stats:
+    get:
+      operationId: getStats
+      tags: [attendance]
+      summary: Dashboard summary stats
+      parameters:
+        - in: query
+          name: date
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Stats"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status: { type: string }
+      required: [status]
+
+    Shift:
+      type: string
+      enum: [matutino, vespertino]
+
+    Child:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        defaultAddress:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        shift:
+          allOf:
+            - $ref: "#/components/schemas/Shift"
+          nullable: true
+        createdAt: { type: string }
+      required: [id, name, defaultAddress, notes, shift, createdAt]
+
+    CreateChild:
+      type: object
+      properties:
+        name: { type: string, minLength: 1 }
+        defaultAddress: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        shift:
+          allOf:
+            - $ref: "#/components/schemas/Shift"
+          nullable: true
+      required: [name]
+
+    UpdateChild:
+      type: object
+      properties:
+        name: { type: string, minLength: 1 }
+        defaultAddress: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        shift:
+          allOf:
+            - $ref: "#/components/schemas/Shift"
+          nullable: true
+
+    AttendanceStatus:
+      type: string
+      enum: [unmarked, present, absent]
+
+    AttendanceRow:
+      type: object
+      properties:
+        childId: { type: integer }
+        name: { type: string }
+        defaultAddress:
+          type: string
+          nullable: true
+        shift:
+          allOf:
+            - $ref: "#/components/schemas/Shift"
+          nullable: true
+        date: { type: string }
+        status:
+          $ref: "#/components/schemas/AttendanceStatus"
+        address:
+          type: string
+          nullable: true
+      required: [childId, name, defaultAddress, shift, date, status, address]
+
+    UpsertAttendance:
+      type: object
+      properties:
+        childId: { type: integer }
+        date: { type: string }
+        status:
+          $ref: "#/components/schemas/AttendanceStatus"
+        address: { type: string, nullable: true }
+      required: [childId, date, status]
+
+    RouteStop:
+      type: object
+      properties:
+        childId: { type: integer }
+        name: { type: string }
+        address: { type: string }
+      required: [childId, name, address]
+
+    Route:
+      type: object
+      properties:
+        date: { type: string }
+        stops:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteStop"
+      required: [date, stops]
+
+    Stats:
+      type: object
+      properties:
+        date: { type: string }
+        totalChildren: { type: integer }
+        presentCount: { type: integer }
+        absentCount: { type: integer }
+        unmarkedCount: { type: integer }
+        addressesOnFile: { type: integer }
+      required:
+        [date, totalChildren, presentCount, absentCount, unmarkedCount, addressesOnFile]
