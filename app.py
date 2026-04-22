@@ -3,29 +3,34 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 
-# --- CONFIGURAÇÃO DO BANCO DE DADOS (O QUE SALVA DE VERDADE) ---
+# --- CONFIGURAÇÃO DO BANCO DE DADOS ---
 def criar_banco():
     conn = sqlite3.connect('dados_transporte.db')
     c = conn.cursor()
-    # Tabela de alunos
     c.execute('''CREATE TABLE IF NOT EXISTS alunos 
-                 (id INTEGER PRIMARY KEY, nome TEXT, endereco TEXT, turno TEXT)''')
-    # Tabela de presença
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, endereco TEXT, turno TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS presenca 
-                 (id_aluno INTEGER, data TEXT, status INTEGER)''')
+                 (id_aluno INTEGER, data TEXT, status INTEGER, PRIMARY KEY (id_aluno, data))''')
     conn.commit()
     conn.close()
 
 def carregar_alunos():
     conn = sqlite3.connect('dados_transporte.db')
-    df = pd.read_sql_query("SELECT * FROM alunos", conn)
+    df = pd.read_sql_query("SELECT * FROM alunos ORDER BY nome ASC", conn)
     conn.close()
     return df
 
-def salvar_aluno(id_aluno, endereco, turno):
+def salvar_aluno_existente(id_aluno, endereco, turno):
     conn = sqlite3.connect('dados_transporte.db')
     c = conn.cursor()
     c.execute("UPDATE alunos SET endereco = ?, turno = ? WHERE id = ?", (endereco, turno, id_aluno))
+    conn.commit()
+    conn.close()
+
+def inserir_novo_aluno(nome, endereco, turno):
+    conn = sqlite3.connect('dados_transporte.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO alunos (nome, endereco, turno) VALUES (?, ?, ?)", (nome, endereco, turno))
     conn.commit()
     conn.close()
 
@@ -47,7 +52,7 @@ def get_presenca(data):
 criar_banco()
 st.set_page_config(page_title="Van Escolar Pro", layout="wide")
 
-# Lista inicial de nomes (só insere se o banco estiver vazio)
+# Lista inicial de nomes (Carga inicial)
 df_existente = carregar_alunos()
 if df_existente.empty:
     LISTA_NOMES = ["Abel Bernardo", "Adeli da Silva", "Alice Andrade", "Alice Bernardes", "Alicia da Silva", "Allyce Gonçalves", "Amaya Rocha", "Ana Beatriz Neves", "Ana Clara Neves", "Ana Gabrielly", "Ana Liz Cardoso", "Analice Marques", "Anna Elisa Delpuppo", "Anna Jhullya Bastos", "Anna Laura", "Anna Vitória Pereira", "Anthony Gabriel", "Anthony Miguel Vauna", "Anthony Nascimento", "Apolo da Silva", "Arthur Charles", "Arthur Portugal", "Asaphe Lima", "Cecília de Souza", "Claricy Guimarães", "Cristyan Silva", "Davi Lucca Nery", "Diogo Soares", "Elisa Soares", "Eloáh Silva", "Elyza Reami", "Emanuelly Machado", "Emílio Sena", "Enzo Victor", "Esther Cristina", "Fernando Arthur", "Gabriel Chagas", "Gael Alfredo", "Gael Santos", "Gael Vauna", "Geferson Lorenzo", "Giúlia Rosa", "Hector Felipe", "Heitor Ávila", "Heitor da Silva", "Heitor de Almeida", "Helena Rocha", "Hillary Almeida", "Hillary Victoria", "Ícaro Samuel", "Isabel Barbosa", "Isabela Ribeiro", "Isabela Valverde", "Isadora Ferreira", "Isaque Serafim", "Ísis Xaviex", "Itallo Matheus", "Jhenyt Rebeka", "Jhulya Ferreira", "Jhulia Vitória de Souza", "João Vitor Alves", "Kailany Toledo", "Kalleb Santos", "Kauã Gabriel", "Kaue de Sonza", "Laura Ferraz", "Lavinia Viera", "Léo Victor", "Lívia Lopes", "Lívia Silveira", "Liz Leonora", "Lorenzo Olegário", "Luiz Eduardo Lima", "Luisa Negrelli", "Luyz Fernando", "Maitê Araújo", "Maitê Fuzari", "Maitê Moreira", "Manuela Barbosa", "Maria Alice Toneti", "Maria Antonia", "Maria Cecília Moraes", "Maria Eduarda Miranda", "Maria Flor Dias", "Maria Heloísa Santos", "Maria Julia Lubase", "Maria Luiza", "Maria Vitória Fagundes", "Maria Vitória Miranda", "Matheus Henrique L", "Maxsuel Fagundes", "Maysa Vitoria", "Mikaela de Souza", "Milena Ferreira", "Miguel Joaquim", "Miguel Pereira", "Mirella de Souza", "Murilo Pereira", "Nathyelle Zanon", "Neymar Junior", "Nicolas Gomes", "Nicolas Silveira", "Otto Miguel", "Paulo Daniel", "Rafaela Costa", "Ravi Pereira", "Rayner Renovatto", "Rayssa Severino", "Rhiana Rangel", "Samara Vaz", "Samara Vitória", "Sarah Buzato", "Sofia Santos", "Sofia Vitória", "Sophia Amaral", "Sophia Cardoso", "Talles Emanuel", "Thallya Malta", "Théo Nascimento", "Vitora Bernandes", "Wallace Andrade", "Wathila Correa", "Yuri Paiva"]
@@ -60,7 +65,7 @@ if df_existente.empty:
 
 # --- MENU ---
 st.sidebar.title("🚐 Controle Van")
-aba = st.sidebar.radio("Ir para:", ["✅ Chamada", "📍 Rota", "⚙️ Configurar Alunos"])
+aba = st.sidebar.radio("Ir para:", ["✅ Chamada", "📍 Rota", "⚙️ Configurar Alunos", "➕ Novo Aluno"])
 
 # 1. CHAMADA
 if aba == "✅ Chamada":
@@ -98,7 +103,7 @@ elif aba == "📍 Rota":
 # 3. CONFIGURAR (ONDE SALVA TUDO)
 elif aba == "⚙️ Configurar Alunos":
     st.header("Configurar Endereços e Turnos")
-    st.info("Preencha e clique em 'SALVAR TUDO' no final da página.")
+    st.info("Preencha e clique em 'SALVAR TUDO' no final.")
     
     with st.form("form_config"):
         for index, row in df_existente.iterrows():
@@ -109,13 +114,18 @@ elif aba == "⚙️ Configurar Alunos":
                                     key=f"t_{row['id']}")
             end_val = c2.text_input("Endereço", value=row['endereco'], key=f"e_{row['id']}")
             
-            # Guardamos os valores para salvar depois do clique
             df_existente.at[index, 'turno'] = turno_val
             df_existente.at[index, 'endereco'] = end_val
             st.divider()
         
         if st.form_submit_button("💾 SALVAR TUDO"):
             for _, r in df_existente.iterrows():
-                salvar_aluno(r['id'], r['endereco'], r['turno'])
-            st.success("Dados salvos com sucesso no banco de dados!")
+                salvar_aluno_existente(r['id'], r['endereco'], r['turno'])
+            st.success("Dados salvos!")
             st.rerun()
+
+# 4. ADICIONAR NOVO ALUNO (FUNÇÃO NOVA)
+elif aba == "➕ Novo Aluno":
+    st.header("➕ Cadastrar Novo Aluno")
+    with st.form("novo_aluno_form"):
+        novo_nome = st.text_input("Nome Completo da Criança")
