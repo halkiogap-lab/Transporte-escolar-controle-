@@ -1,164 +1,290 @@
-import streamlit as st
-import pandas as pd
-import sqlite3
-from datetime import datetime
-import urllib.parse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+from database import get_db_connection, init_db
+from models import (
+    Child, CreateChild, UpdateChild,
+    AttendanceRow, UpsertAttendance,
+    Route, Stats, HealthStatus
+)
 
-# --- CONFIGURAÇÃO DO BANCO DE DADOS ---
-def criar_banco():
-    conn = sqlite3.connect('dados_transporte.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS alunos 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, endereco TEXT, turno TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS presenca 
-                 (id_aluno INTEGER, data TEXT, status INTEGER, hora_entrega TEXT, PRIMARY KEY (id_aluno, data))''')
+app = FastAPI(
+    title="Sistema de Gestão de Transporte Escolar", 
+    version="0.1.0", 
+    description="API para controle de presença e otimização de rotas"
+)
+
+# Configuração de CORS - Permite que o Frontend se comunique com a API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Em produção, substitua pelo domínio do seu app
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("startup")
+def startup():
+    """Inicializa o banco de dados ao subir a aplicação."""
+    init_db()
+
+
+# ── Health Check ─────────────────────────────────────────────────────────────
+
+@app.get("/api/healthz", response_model=HealthStatus, tags=["Health"])
+def health_check():
+    return {"status": "ok"}
+
+
+# ── Children (Alunos) ────────────────────────────────────────────────────────
+
+@app.get("/api/children", response_model=list[Child], tags=["Children"])
+def list_children():
+    """Lista todos os alunos cadastrados em ordem alfabética."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, default_address, notes, shift, created_at 
+                FROM children 
+                ORDER BY name ASC
+                """
+            )
+            rows = cur.fetchall()
+    return [
+        Child(
+            id=r[0], name=r[1], defaultAddress=r[2],
+            notes=r[3], shift=r[4], createdAt=r[5].isoformat()
+        )
+        for r in rows
+    ]
+
+
+@app.post("/api/children", response_model=Child, status_code=201, tags=["Children"])
+def create_child(body: CreateChild):
+    """Cadastra um novo aluno no sistema."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO children (name, default_address, notes, shift) 
+                VALUES (%s, %s, %s, %s) 
+                RETURNING id, name, default_address, notes, shift, created_at
+                """,
+                (body.name.strip(), body.defaultAddress, body.notes, body.shift)
+            )
+            r = cur.fetchone()
+        conn.commit()
     
-    try:
-        c.execute("SELECT hora_entrega FROM presenca LIMIT 1")
-    except sqlite3.OperationalError:
-        c.execute("ALTER TABLE presenca ADD COLUMN hora_entrega TEXT DEFAULT ''")
-        
-    conn.commit()
-    conn.close()
+    return Child(
+        id=r[0], name=r[1], defaultAddress=r[2],
+        notes=r[3], shift=r[4], createdAt=r[5].isoformat()
+    )
 
-def carregar_alunos():
-    conn = sqlite3.connect('dados_transporte.db')
-    df = pd.read_sql_query("SELECT * FROM alunos ORDER BY nome ASC", conn)
-    conn.close()
-    return df
 
-def carregar_presenca_detalhada(data):
-    conn = sqlite3.connect('dados_transporte.db')
-    df = pd.read_sql_query(f"SELECT * FROM presenca WHERE data = '{data}'", conn)
-    conn.close()
-    return df
+@app.patch("/api/children/{child_id}", response_model=Child, tags=["Children"])
+def update_child(child_id: int, body: UpdateChild):
+    """Atualiza dados específicos de um aluno (Partial Update)."""
+    fields = {}
+    if body.name is not None:
+        fields["name"] = body.name.strip()
+    if body.defaultAddress is not None:
+        fields["default_address"] = body.defaultAddress
+    if body.notes is not None:
+        fields["notes"] = body.notes
+    if body.shift is not None:
+        fields["shift"] = body.shift
 
-# --- INICIALIZAÇÃO ---
-criar_banco()
-st.set_page_config(page_title="Van Escolar Pro", layout="wide")
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
 
-df_atual = carregar_alunos()
+    set_clause = ", ".join(f"{k} = %s" for k in fields)
+    values = list(fields.values()) + [child_id]
 
-# --- MENU LATERAL ---
-st.sidebar.title("🚐 Controle Van")
-data_selecionada = st.sidebar.date_input("📅 Calendário", datetime.now())
-data_str = data_selecionada.strftime("%Y-%m-%d")
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE children SET {set_clause} WHERE id = %s "
+                f"RETURNING id, name, default_address, notes, shift, created_at",
+                values
+            )
+            r = cur.fetchone()
+        conn.commit()
 
-aba = st.sidebar.radio("Navegação", ["✅ Chamada", "📍 Rota e Entrega", "⚙️ Configurar Alunos", "➕ Novo Aluno"])
+    if not r:
+        raise HTTPException(status_code=404, detail="Criança não encontrada")
 
-# --- 1. CHAMADA ---
-if aba == "✅ Chamada":
-    st.header(f"✅ Chamada - Dia {data_selecionada.strftime('%d/%m/%Y')}")
-    turno = st.radio("Turno", ["matutino", "vespertino"], horizontal=True)
+    return Child(
+        id=r[0], name=r[1], defaultAddress=r[2],
+        notes=r[3], shift=r[4], createdAt=r[5].isoformat()
+    )
+
+
+@app.delete("/api/children/{child_id}", status_code=204, tags=["Children"])
+def delete_child(child_id: int):
+    """Remove um aluno do sistema."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM children WHERE id = %s", (child_id,))
+        conn.commit()
+
+
+# ── Attendance (Presença) ────────────────────────────────────────────────────
+
+@app.get("/api/attendance", response_model=list[AttendanceRow], tags=["Attendance"])
+def list_attendance(
+    date: str = Query(..., description="Data no formato YYYY-MM-DD"),
+    shift: Optional[str] = Query(None, description="Filtrar por turno (manhã/tarde)")
+):
+    """Lista a presença dos alunos em uma data específica."""
+    params = [date]
+    shift_filter = ""
     
-    alunos_turno = df_atual[df_atual['turno'] == turno]
-    presenca_data = carregar_presenca_detalhada(data_str)
-    presentes_ids = presenca_data[presenca_data['status'] == 1]['id_aluno'].tolist()
-    
-    if alunos_turno.empty:
-        st.warning("Nenhum aluno neste turno.")
-    else:
-        for _, row in alunos_turno.iterrows():
-            c1, c2 = st.columns([3, 1])
-            c1.write(f"**{row['nome']}**")
-            check = c2.checkbox("Presente", value=(row['id'] in presentes_ids), key=f"p_{data_str}_{row['id']}")
-            
-            if check != (row['id'] in presentes_ids):
-                status = 1 if check else 0
-                conn = sqlite3.connect('dados_transporte.db')
-                conn.execute("INSERT OR REPLACE INTO presenca (id_aluno, data, status, hora_entrega) VALUES (?, ?, ?, COALESCE((SELECT hora_entrega FROM presenca WHERE id_aluno=? AND data=?), ''))", 
-                             (row['id'], data_str, status, row['id'], data_str))
-                conn.commit()
-                conn.close()
-                st.rerun()
+    if shift:
+        shift_filter = "AND c.shift = %s"
+        params.append(shift)
 
-# --- 2. ROTA E ENTREGA (COM BOTÃO GPS NOVO) ---
-elif aba == "📍 Rota e Entrega":
-    st.header(f"📍 Rota - {data_selecionada.strftime('%d/%m/%Y')}")
-    presenca_data = carregar_presenca_detalhada(data_str)
-    presentes_ids = presenca_data[presenca_data['status'] == 1]['id_aluno'].tolist()
-    
-    rota = df_atual[df_atual['id'].isin(presentes_ids)]
-    
-    if rota.empty:
-        st.info("Ninguém marcado como presente hoje.")
-    else:
-        for _, row in rota.iterrows():
-            with st.expander(f"🏠 {row['nome']}"):
-                st.write(f"Endereço: {row['endereco']}")
-                
-                # --- NOVO: BOTÃO DE GPS ---
-                if row['endereco'] and row['endereco'] != "Não cadastrado":
-                    endereco_codificado = urllib.parse.quote(row['endereco'])
-                    link_maps = f"https://www.google.com/maps/search/?api=1&query={endereco_codificado}"
-                    st.link_button(f"🗺️ Abrir GPS: {row['nome']}", link_maps)
-                else:
-                    st.warning("Endereço não cadastrado para abrir o GPS.")
-                
-                # Registro de Entrega
-                entrega_row = presenca_data[presenca_data['id_aluno'] == row['id']]
-                hora_atual = entrega_row['hora_entrega'].values[0] if not entrega_row.empty else ""
-                
-                if not hora_atual:
-                    if st.button(f"✅ Confirmar Entrega: {row['nome']}", key=f"ent_{row['id']}"):
-                        h_agora = datetime.now().strftime("%H:%M")
-                        conn = sqlite3.connect('dados_transporte.db')
-                        conn.execute("UPDATE presenca SET hora_entrega = ? WHERE id_aluno = ? AND data = ?", (h_agora, row['id'], data_str))
-                        conn.commit()
-                        conn.close()
-                        st.rerun()
-                else:
-                    st.success(f"Entregue às {hora_atual}")
+    query = f"""
+        SELECT c.id, c.name, c.default_address, c.shift,
+               a.status, a.address
+        FROM children c
+        LEFT JOIN attendance a ON a.child_id = c.id AND a.date = %s
+        WHERE 1=1 {shift_filter}
+        ORDER BY c.name ASC
+    """
 
-        st.divider()
-        if st.button("🏁 FINALIZAR E GERAR RELATÓRIO", type="primary"):
-            st.subheader("📋 Relatório Final")
-            hora_gen = datetime.now().strftime("%H:%M")
-            texto_relatorio = f"🚌 RELATÓRIO VAN - DATA: {data_str} às {hora_gen}\n\n✅ PRESENTES:\n"
-            
-            for _, r in rota.iterrows():
-                info_p = presenca_data[presenca_data['id_aluno'] == r['id']]
-                h_ent = info_p['hora_entrega'].values[0] if not info_p.empty else "Pendente"
-                texto_relatorio += f"- {r['nome']} (Entregue: {h_ent if h_ent else 'Pendente'})\n"
-            
-            texto_relatorio += "\n❌ AUSENTES:\n"
-            faltantes = df_atual[~df_atual['id'].isin(presentes_ids) & (df_atual['turno'] != 'pendente')]
-            for _, f in faltantes.iterrows():
-                texto_relatorio += f"- {f['nome']}\n"
-            
-            st.text_area("Copie o texto:", texto_relatorio, height=200)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
 
-# --- 3. CONFIGURAR ---
-elif aba == "⚙️ Configurar Alunos":
-    st.header("⚙️ Configurações")
-    with st.form("form_config"):
-        novos_dados = []
-        for index, row in df_atual.iterrows():
-            st.write(f"**{row['nome']}**")
-            c1, c2 = st.columns([1, 2])
-            t = c1.selectbox("Turno", ["pendente", "matutino", "vespertino"], index=["pendente", "matutino", "vespertino"].index(row['turno']), key=f"t_{row['id']}")
-            e = c2.text_input("Endereço", value=row['endereco'], key=f"e_{row['id']}")
-            novos_dados.append((e, t, row['id']))
-        if st.form_submit_button("💾 SALVAR TUDO"):
-            conn = sqlite3.connect('dados_transporte.db')
-            conn.executemany("UPDATE alunos SET endereco = ?, turno = ? WHERE id = ?", novos_dados)
-            conn.commit()
-            conn.close()
-            st.success("Salvo!")
-            st.rerun()
+    return [
+        AttendanceRow(
+            childId=r[0],
+            name=r[1],
+            defaultAddress=r[2],
+            shift=r[3],
+            date=date,
+            status=r[4] if r[4] else "unmarked",
+            address=r[5]
+        )
+        for r in rows
+    ]
 
-# --- 4. NOVO ALUNO ---
-elif aba == "➕ Novo Aluno":
-    st.header("➕ Novo Aluno")
-    with st.form("f_novo"):
-        n = st.text_input("Nome")
-        e = st.text_input("Endereço")
-        t = st.selectbox("Turno", ["matutino", "vespertino", "pendente"])
-        if st.form_submit_button("Adicionar"):
-            if n:
-                conn = sqlite3.connect('dados_transporte.db')
-                conn.execute("INSERT INTO alunos (nome, endereco, turno) VALUES (?, ?, ?)", (n, e, t))
-                conn.commit()
-                conn.close()
-                st.success("Adicionado!")
-                st.rerun()
+
+@app.put("/api/attendance", response_model=AttendanceRow, tags=["Attendance"])
+def upsert_attendance(body: UpsertAttendance):
+    """Registra ou atualiza a presença de um aluno."""
+    address_for_row = body.address if body.status == "present" else None
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # Atualiza endereço padrão se marcado como presente com novo endereço
+            if body.status == "present" and body.address and body.address.strip():
+                cur.execute(
+                    "UPDATE children SET default_address = %s WHERE id = %s",
+                    (body.address.strip(), body.childId)
+                )
+
+            # Upsert na tabela de presença (Insere ou Atualiza se já existir)
+            cur.execute(
+                """
+                INSERT INTO attendance (child_id, date, status, address)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (child_id, date)
+                DO UPDATE SET status = EXCLUDED.status,
+                              address = EXCLUDED.address,
+                              updated_at = NOW()
+                RETURNING child_id, date, status, address
+                """,
+                (body.childId, body.date, body.status, address_for_row)
+            )
+            att = cur.fetchone()
+
+            # Busca dados atualizados da criança para o retorno
+            cur.execute(
+                "SELECT name, default_address, shift FROM children WHERE id = %s",
+                (body.childId,)
+            )
+            child = cur.fetchone()
+        conn.commit()
+
+    return AttendanceRow(
+        childId=att[0],
+        name=child[0] if child else "",
+        defaultAddress=child[1] if child else None,
+        shift=child[2] if child else None,
+        date=att[1],
+        status=att[2],
+        address=att[3]
+    )
+
+
+# ── Route (Otimização) ───────────────────────────────────────────────────────
+
+@app.get("/api/route", response_model=Route, tags=["Route"])
+def get_route(date: str = Query(...)):
+    """Gera a lista de paradas para os alunos que estarão presentes no dia."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT c.id, c.name, 
+                       COALESCE(a.address, c.default_address) AS address
+                FROM attendance a
+                INNER JOIN children c ON c.id = a.child_id
+                WHERE a.date = %s AND a.status = 'present'
+                ORDER BY c.name ASC
+                """,
+                (date,)
+            )
+            rows = cur.fetchall()
+
+    stops = [
+        {"childId": r[0], "name": r[1], "address": r[2]}
+        for r in rows
+        if r[2] and r[2].strip()
+    ]
+
+    return Route(date=date, stops=stops)
+
+
+# ── Stats (Estatísticas) ─────────────────────────────────────────────────────
+
+@app.get("/api/stats", response_model=Stats, tags=["Stats"])
+def get_stats(date: str = Query(...)):
+    """Retorna um resumo estatístico da presença no dia selecionado."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM children")
+            total = cur.fetchone()[0]
+
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM children 
+                WHERE default_address IS NOT NULL AND TRIM(default_address) != ''
+                """
+            )
+            addresses_on_file = cur.fetchone()[0]
+
+            cur.execute(
+                """
+                SELECT status, COUNT(*) FROM attendance 
+                WHERE date = %s 
+                GROUP BY status
+                """,
+                (date,)
+            )
+            status_rows = {r[0]: r[1] for r in cur.fetchall()}
+
+    present = status_rows.get("present", 0)
+    absent = status_rows.get("absent", 0)
+    unmarked = max(0, total - present - absent)
+
+    return Stats(
+        date=date,
+        totalChildren=total,
+        presentCount=present,
+        absentCount=absent,
+        unmarkedCount=unmarked,
+        addressesOnFile=addresses_on_file
+    )
