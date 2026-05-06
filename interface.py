@@ -41,7 +41,24 @@ elif choice == "Ver Lista":
     if res.status_code == 200:
         alunos = res.json()
         for a in alunos:
-            st.write(f"👤 **{a['name']}** - {a['address']}")
+elif choice == "Ver Lista":
+    st.header("Alunos Cadastrados")
+    res = requests.get(f"{API_URL}/api/children")
+    if res.status_code == 200:
+        alunos = res.json()
+        if not alunos:
+            st.info("Nenhum aluno cadastrado ainda.")
+        for a in alunos:
+            # Usamos .get() para evitar o erro de 'KeyError'
+            nome = a.get('name', 'Sem nome')
+            # Tenta pegar 'address' ou 'home_address'
+            endereco = a.get('address') or a.get('home_address') or 'Endereço não informado'
+            
+            st.write(f"👤 **{nome}**")
+            st.caption(f"📍 {endereco}")
+            st.divider()
+    else:
+        st.error("Erro ao buscar dados da API.")
     else:
         st.info("Nenhum aluno encontrado ou erro na API.")
 
